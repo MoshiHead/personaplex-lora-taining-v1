@@ -163,7 +163,7 @@ cython_debug/
 Cargo.lock
 *~
 *.safetensors
-*.wav
+# *.wav
 trace*.json
 *.flac
 pkg
