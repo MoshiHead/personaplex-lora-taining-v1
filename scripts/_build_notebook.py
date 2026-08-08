@@ -134,6 +134,12 @@ cells.append(code(
 "SAMPLE_RATE     = 24000                        # must match loaders.SAMPLE_RATE (what mimi expects)",
 "SEGMENT_GAP_SEC = 0.25                         # silence inserted between spoken segments",
 "",
+"# Leave both as None to auto-pick the first two speakers in the model's list (Section 4 prints",
+"# ALL available speaker IDs before deciding, so you can listen/research and set these explicitly",
+"# instead, e.g. USER_SPEAKER_OVERRIDE = 'p225'  /  MODEL_SPEAKER_OVERRIDE = 'p330'",
+"USER_SPEAKER_OVERRIDE = None",
+"MODEL_SPEAKER_OVERRIDE = None",
+"",
 "# --- run size --------------------------------------------------------------------",
 "LIMIT = 4   # <-- SMOKE TEST FIRST: only the first 4 rows. Set to None for the full 20k once verified.",
 "",
@@ -315,8 +321,14 @@ cells.append(code(
 cells.append(md(
 "## 4. Pick speakers and build shards",
 "",
-"VITS/VCTK ships ~109 built-in speakers, no reference audio needed. We load the model once here just to "
-"read `tts.speakers` and pick two distinct IDs for USER vs MODEL.",
+"VITS/VCTK ships ~109 built-in speakers, no reference audio needed -- USER and MODEL always get two "
+"distinct voices. By default that's just the first two IDs in the model's list (arbitrary, not chosen "
+"for anything). All ~109 IDs are printed below so you can pick deliberately: set "
+"`USER_SPEAKER_OVERRIDE`/`MODEL_SPEAKER_OVERRIDE` in Section 2 to specific IDs (VCTK IDs look like "
+"`'p225'`, `'p226'`, ...; typically alternating/interleaved between male and female speakers -- there's "
+"no gender label in the ID itself, so the practical way to choose is to synthesize a short test line "
+"with a couple of candidate IDs and listen, e.g. `_probe.tts_to_file(text='test', speaker='p225', "
+"file_path='test.wav')`).",
 ))
 
 cells.append(code(
@@ -325,9 +337,16 @@ cells.append(code(
 "_probe = _TTS_probe(TTS_MODEL_NAME)",
 "speakers = list(_probe.speakers) if _probe.speakers else []",
 "assert len(speakers) >= 2, f'expected a multi-speaker model, got: {speakers}'",
-"USER_SPEAKER, MODEL_SPEAKER = speakers[0], speakers[1]",
-"print('USER_SPEAKER  =', USER_SPEAKER)",
-"print('MODEL_SPEAKER =', MODEL_SPEAKER)",
+"print(f'{len(speakers)} available speaker IDs:')",
+"print(speakers)",
+"",
+"USER_SPEAKER = USER_SPEAKER_OVERRIDE or speakers[0]",
+"MODEL_SPEAKER = MODEL_SPEAKER_OVERRIDE or speakers[1]",
+"assert USER_SPEAKER in speakers, f'{USER_SPEAKER!r} not in this model\\'s speaker list'",
+"assert MODEL_SPEAKER in speakers, f'{MODEL_SPEAKER!r} not in this model\\'s speaker list'",
+"assert USER_SPEAKER != MODEL_SPEAKER, 'USER_SPEAKER and MODEL_SPEAKER must be different'",
+"print('USER_SPEAKER  =', USER_SPEAKER, '(override)' if USER_SPEAKER_OVERRIDE else '(auto: speakers[0])')",
+"print('MODEL_SPEAKER =', MODEL_SPEAKER, '(override)' if MODEL_SPEAKER_OVERRIDE else '(auto: speakers[1])')",
 "del _probe",
 ))
 

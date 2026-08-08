@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import math
 import random
 import time
 from pathlib import Path
@@ -53,7 +54,7 @@ from huggingface_hub import hf_hub_download
 from .models import loaders
 from .models.lm import LMModel
 from .rag_loss_new import compute_rag_losses, SegmentMeta
-from .dataset import build_data_loader
+from .dataset import build_data_loader, count_training_samples
 from .interleaver import InterleavedTokenizer, Interleaver, Batch
 
 logger = logging.getLogger(__name__)
@@ -325,6 +326,28 @@ def train(args: argparse.Namespace) -> None:
         f"this process -> {device}, mixed_precision={accelerator.mixed_precision}"
     )
 
+    # --max-steps, if not explicitly passed, is derived from --epochs so that
+    # 1, 2, 3, 4, 5 (or any N) GPUs all train for the same number of full
+    # passes over the data -- global batch size grows with GPU count
+    # (batch_size * num_processes * grad_accum), so steps/epoch shrinks
+    # proportionally; this keeps that arithmetic out of your hands. Counting
+    # is pure JSON parsing (no audio decode), so it's cheap enough to do
+    # before any model loading, and runs identically on every rank (each
+    # rank reads the same manifest files, no need to gate to main_process).
+    if args.max_steps is None:
+        total_samples = count_training_samples(args.train_data, args.duration_sec)
+        global_batch = args.batch_size * accelerator.num_processes * args.grad_accum
+        steps_per_epoch = max(1, math.ceil(total_samples / global_batch))
+        args.max_steps = steps_per_epoch * args.epochs
+        logger.info(
+            f"auto max-steps: {total_samples} samples / (batch_size={args.batch_size} "
+            f"* {accelerator.num_processes} GPU(s) * grad_accum={args.grad_accum} "
+            f"= {global_batch} global batch) = {steps_per_epoch} steps/epoch "
+            f"* {args.epochs} epochs = {args.max_steps} steps"
+        )
+    else:
+        logger.info(f"using explicit --max-steps={args.max_steps} (--epochs ignored)")
+
     logger.info("loading tokenizer")
     if args.tokenizer is None:
         args.tokenizer = hf_hub_download(args.hf_repo, loaders.TEXT_TOKENIZER_NAME)
@@ -532,7 +555,15 @@ def main() -> None:
 
     ap.add_argument("--lr", type=float, default=2e-6)
     ap.add_argument("--weight-decay", type=float, default=0.1)
-    ap.add_argument("--max-steps", type=int, default=2000)
+    ap.add_argument("--max-steps", type=int, default=None,
+                     help="If omitted (default), computed automatically from --epochs, the actual "
+                          "--train-data sample count, --batch-size, --grad-accum, and the number of "
+                          "processes accelerate launches with, so the same --epochs value trains for "
+                          "the same number of full data passes regardless of GPU count. Pass an "
+                          "explicit value to override and ignore --epochs entirely.")
+    ap.add_argument("--epochs", type=int, default=10,
+                     help="Target number of full passes over --train-data; only used to derive "
+                          "--max-steps when --max-steps is not explicitly passed.")
     ap.add_argument("--grad-accum", type=int, default=1)
 
     ap.add_argument("--first-codebook-weight", dest="first_codebook_weight_multiplier", type=float, default=100.0)

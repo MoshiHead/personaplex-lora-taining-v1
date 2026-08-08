@@ -364,23 +364,43 @@ cells.append(md(
 "pretrained-7B learning rate, gradient checkpointing on). `DURATION_SEC` is computed from your dataset's "
 "real max duration plus a safety margin, not guessed -- picking too small a value silently truncates "
 "longer examples (`interleaver.py` hard-cuts audio at `duration_sec * frame_rate` frames).",
+"",
+"`--max-steps` is deliberately **not** set here -- `moshi.train` computes it itself from `--epochs`, the "
+"actual `--train-data` sample count, `--batch-size`, `--grad-accum`, and however many processes "
+"`accelerate launch` actually starts (Section 11), so `EPOCHS` below means the same number of full data "
+"passes no matter how many GPUs this pod has. This cell only *predicts* that same number ahead of time "
+"(reusing the exact same counting function) so `--save-every`/`--eval-every` can be sized sensibly "
+"relative to it, instead of being hardcoded to values that made sense for a fixed 2000-step run.",
 ))
 cells.append(code(
+"from moshi.dataset import count_training_samples",
+"",
 "DURATION_SEC = round(durations[-1] * 1.1, 1)   # max observed + 10% margin",
+"EPOCHS = 10                                     # full passes over the dataset; same for any GPU count",
+"BATCH_SIZE = 4                                  # PER-GPU; global = this * NUM_GPUS * GRAD_ACCUM",
+"GRAD_ACCUM = 4",
+"",
+"total_samples = count_training_samples(DATASET_DIR, DURATION_SEC)",
+"global_batch = BATCH_SIZE * NUM_GPUS * GRAD_ACCUM",
+"steps_per_epoch = -(-total_samples // global_batch)  # ceil, matches train.py's own math exactly",
+"predicted_max_steps = steps_per_epoch * EPOCHS",
+"print(f'{total_samples} samples / (batch_size={BATCH_SIZE} * {NUM_GPUS} GPU(s) * grad_accum={GRAD_ACCUM} '",
+"      f'= {global_batch} global batch) = {steps_per_epoch} steps/epoch * {EPOCHS} epochs '",
+"      f'= {predicted_max_steps} steps (train.py will compute this same number itself)')",
 "",
 "TRAIN_CONFIG = {",
 "    '--train-data': DATASET_DIR,",
 "    '--eval-data': EVAL_DATA_ARG,",
 "    '--duration-sec': str(DURATION_SEC),",
-"    '--batch-size': '4',            # PER-GPU batch size; global = this * NUM_GPUS * grad-accum",
+"    '--batch-size': str(BATCH_SIZE),",
 "    '--max-ref-tokens': '500',",
 "    '--hf-repo': HF_REPO_ID,",
 "    '--lora-rank': '128',",
 "    '--lora-scaling': '2.0',",
 "    '--lr': '2e-6',",
 "    '--weight-decay': '0.1',",
-"    '--max-steps': '2000',",
-"    '--grad-accum': '4',",
+"    '--epochs': str(EPOCHS),        # train.py auto-computes --max-steps from this -- see Section 10 markdown",
+"    '--grad-accum': str(GRAD_ACCUM),",
 "    '--first-codebook-weight': '100.0',",
 "    '--text-padding-weight': '0.5',",
 "    '--ref-token-weight': '5.0',",
@@ -389,9 +409,9 @@ cells.append(code(
 "    '--body-weight': '2.0',",
 "    '--no-rag-weight': '1.0',",
 "    '--out-dir': OUT_DIR,",
-"    '--save-every': '250',",
+"    '--save-every': str(max(50, predicted_max_steps // 20)),   # ~20 checkpoints over the whole run",
 "    '--log-every': '10',",
-"    '--eval-every': '200',",
+"    '--eval-every': str(max(50, predicted_max_steps // 10)),   # ~10 evals over the whole run",
 "}",
 "",
 "print(f'Global batch size = {TRAIN_CONFIG[\"--batch-size\"]} (per-GPU) '",

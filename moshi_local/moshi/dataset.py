@@ -17,6 +17,7 @@ The training loop accesses RAG metadata via:
 import itertools
 import json
 import logging
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator
@@ -138,6 +139,31 @@ def parse_data_sources(
     assert min(n_weights) > 0
     assert abs(1 - sum(n_weights)) < 1e-8
     return sources, n_weights
+
+
+def count_training_samples(pretrain_data: str, duration_sec: float) -> int:
+    """Counts how many training chunks `build_dataset` will actually produce
+    for `pretrain_data` at the given duration_sec, WITHOUT loading or
+    encoding any audio -- reads only each jsonl line's declared "duration"
+    field and mirrors sphn.dataset_jsonl's own chunking convention
+    (pad_last_segment=True: ceil(duration / duration_sec) chunks per
+    recording, minimum 1 -- same math as the (currently unused elsewhere)
+    while-loop in maybe_load_local_dataset above). Used to auto-size
+    --max-steps from a target epoch count in train.py; deliberately cheap
+    (pure JSON parsing) so it can run before any model/mimi loading."""
+    sources, _ = parse_data_sources(pretrain_data)
+    total = 0
+    for source in sources:
+        for jsonl_file in source.jsonl_files:
+            with open(jsonl_file) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    data = json.loads(line)
+                    dur = float(data["duration"])
+                    total += max(1, math.ceil(dur / duration_sec))
+    return total
 
 
 def build_dataset(
