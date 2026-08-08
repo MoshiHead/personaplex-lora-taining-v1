@@ -1,0 +1,170 @@
+{
+  "alignments": [
+    [
+      "Who",
+      [
+        0.0,
+        0.31
+      ],
+      "USER"
+    ],
+    [
+      "portrayed",
+      [
+        0.344,
+        0.654
+      ],
+      "USER"
+    ],
+    [
+      "Jim",
+      [
+        0.688,
+        0.998
+      ],
+      "USER"
+    ],
+    [
+      "Morrison",
+      [
+        1.032,
+        1.342
+      ],
+      "USER"
+    ],
+    [
+      "in",
+      [
+        1.377,
+        1.686
+      ],
+      "USER"
+    ],
+    [
+      "Wayne's",
+      [
+        1.721,
+        2.031
+      ],
+      "USER"
+    ],
+    [
+      "World",
+      [
+        2.065,
+        2.375
+      ],
+      "USER"
+    ],
+    [
+      "2?",
+      [
+        2.409,
+        2.719
+      ],
+      "USER"
+    ],
+    [
+      "Michael",
+      [
+        3.003,
+        3.39
+      ],
+      "MODEL"
+    ],
+    [
+      "A.",
+      [
+        3.433,
+        3.819
+      ],
+      "MODEL"
+    ],
+    [
+      "Nickles",
+      [
+        3.862,
+        4.248
+      ],
+      "MODEL"
+    ],
+    [
+      "portrayed",
+      [
+        4.291,
+        4.678
+      ],
+      "MODEL"
+    ],
+    [
+      "Jim",
+      [
+        4.721,
+        5.107
+      ],
+      "MODEL"
+    ],
+    [
+      "Morrison",
+      [
+        5.15,
+        5.536
+      ],
+      "MODEL"
+    ],
+    [
+      "in",
+      [
+        5.579,
+        5.966
+      ],
+      "MODEL"
+    ],
+    [
+      "Wayne's",
+      [
+        6.009,
+        6.395
+      ],
+      "MODEL"
+    ],
+    [
+      "World",
+      [
+        6.438,
+        6.824
+      ],
+      "MODEL"
+    ],
+    [
+      "2.",
+      [
+        6.867,
+        7.254
+      ],
+      "MODEL"
+    ]
+  ],
+  "segment_meta": {
+    "turns": [
+      {
+        "kind": "regular",
+        "start_sec": 0.0,
+        "end_sec": 2.753
+      },
+      {
+        "kind": "lookup",
+        "start_sec": 3.003,
+        "end_sec": 3.003
+      },
+      {
+        "kind": "body",
+        "start_sec": 3.003,
+        "end_sec": 7.297
+      }
+    ]
+  },
+  "text_conditions": {
+    "reference": "Michael A. Nickles portrayed Jim Morrison in Wayne's World 2."
+  }
+}
