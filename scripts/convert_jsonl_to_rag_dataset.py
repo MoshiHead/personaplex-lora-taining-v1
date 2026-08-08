@@ -6,7 +6,10 @@ body[, lead, filler, raw_response]) into the audio-grounded format the
 training pipeline actually requires:
 
     <out_dir>/train.jsonl                    manifest: {"path", "duration"}
-    <out_dir>/audio/<id>.wav                 synthesized speech, mono, 24kHz
+    <out_dir>/audio/<id>.wav                 synthesized speech, STEREO, 24kHz --
+                                              channel 0 = agent/MODEL audio, channel 1 =
+                                              USER audio, both spanning the full duration
+                                              simultaneously (required -- see write_wav_stereo)
     <out_dir>/audio/<id>.new.combined.json   alignments + segment_meta + text_conditions
 
 The model never speaks before the reference is injected:
@@ -159,11 +162,31 @@ def words_alignment(text: str, start_sec: float, end_sec: float, speaker: str) -
     return out
 
 
-def write_wav(path: str, samples: np.ndarray) -> None:
-    clipped = np.clip(samples, -1.0, 1.0)
+def write_wav_stereo(path: str, agent_channel: np.ndarray, user_channel: np.ndarray) -> None:
+    """Writes a 2-channel WAV: channel 0 = agent/MODEL audio, channel 1 =
+    USER audio, both spanning the FULL sample duration simultaneously (not
+    concatenated end-to-end). This is required, not cosmetic: interleaver.py
+    calls `mimi.encode(audio_tensor[:, None])` on this file's [2, T] samples,
+    which treats the 2 channels as 2 batch items, each independently encoded
+    to 8 codebooks (MimiModel.encode: [B,C,T] -> [B,K,T], K=8 per item), then
+    `.view(1, -1, T)` flattens the [2, 8, T] result into [1, 16, T] --
+    channel 0 becomes codebooks 0-7, channel 1 becomes codebooks 8-15. That
+    16-wide layout must match the [agent(8), user(8)] convention already
+    hardcoded in `_build_forced_text_frames`'s SILENCE_TOKENS (agent)
+    /SINE_TOKENS (user) blocks, or a mono file 8 codebooks short of what the
+    rest of the pipeline expects, raising:
+        RuntimeError: Sizes of tensors must match except in dimension 2.
+        Expected size 8 but got size 16 for tensor number 1 in the list.
+    """
+    n = max(len(agent_channel), len(user_channel))
+    agent_channel = np.pad(agent_channel, (0, n - len(agent_channel)))
+    user_channel = np.pad(user_channel, (0, n - len(user_channel)))
+
+    stereo = np.stack([agent_channel, user_channel], axis=-1)  # [T, 2] for interleaved PCM
+    clipped = np.clip(stereo, -1.0, 1.0)
     pcm16 = (clipped * 32767.0).astype("<i2")
     with wave.open(path, "wb") as w:
-        w.setnchannels(1)
+        w.setnchannels(2)
         w.setsampwidth(2)
         w.setframerate(SAMPLE_RATE)
         w.writeframes(pcm16.tobytes())
@@ -171,7 +194,7 @@ def write_wav(path: str, samples: np.ndarray) -> None:
 
 def convert_one(row: dict, audio_dir: str) -> tuple[dict, float, str]:
     ex_id = str(row["id"])
-    gap = np.zeros(int(SEGMENT_GAP_SEC * SAMPLE_RATE), dtype=np.float32)
+    gap_samples = int(SEGMENT_GAP_SEC * SAMPLE_RATE)
 
     # Only two spoken segments: the user's question, then the model's
     # grounded answer. No lead/filler audio is synthesized at all -- the
@@ -183,16 +206,18 @@ def convert_one(row: dict, audio_dir: str) -> tuple[dict, float, str]:
     for s in segs:
         s.samples = synthesize(s.text, s.role)
 
-    pieces = []
+    # Timeline (seconds/samples) is unaffected by the stereo change below --
+    # turn/alignment timing describes WHEN something happens, not which
+    # channel it's on. What changes is that each speaker's clip is placed at
+    # its time offset on ITS OWN channel (silence elsewhere), not
+    # concatenated end-to-end into one channel.
     t = 0.0
     turns = []
     alignments = []
     for i, s in enumerate(segs):
         if i > 0:
-            pieces.append(gap)
-            t += len(gap) / SAMPLE_RATE
+            t += gap_samples / SAMPLE_RATE
         s.start_sec = t
-        pieces.append(s.samples)
         t += len(s.samples) / SAMPLE_RATE
         s.end_sec = t
 
@@ -208,12 +233,20 @@ def convert_one(row: dict, audio_dir: str) -> tuple[dict, float, str]:
                       "end_sec": round(s.end_sec, 3)})
         alignments += words_alignment(s.text, s.start_sec, s.end_sec, s.role)
 
-    full_audio = np.concatenate(pieces) if pieces else np.zeros(1, dtype=np.float32)
-    duration_sec = len(full_audio) / SAMPLE_RATE
+    total_samples = int(round(t * SAMPLE_RATE))
+    agent_channel = np.zeros(total_samples, dtype=np.float32)
+    user_channel = np.zeros(total_samples, dtype=np.float32)
+    for s in segs:
+        start_sample = int(round(s.start_sec * SAMPLE_RATE))
+        end_sample = start_sample + len(s.samples)
+        target = agent_channel if s.role == "MODEL" else user_channel
+        target[start_sample:end_sample] = s.samples
+
+    duration_sec = total_samples / SAMPLE_RATE
 
     wav_path = os.path.join(audio_dir, f"{ex_id}.wav")
     json_path = os.path.join(audio_dir, f"{ex_id}.new.combined.json")
-    write_wav(wav_path, full_audio)
+    write_wav_stereo(wav_path, agent_channel, user_channel)
 
     sidecar = {
         "alignments": sorted(alignments, key=lambda a: a[1][0]),

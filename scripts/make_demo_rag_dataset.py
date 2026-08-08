@@ -78,7 +78,8 @@ import json
 import math
 import os
 import wave
-import struct
+
+import numpy as np
 
 SAMPLE_RATE = 24000          # loaders.SAMPLE_RATE
 FRAME_RATE = 12.5            # loaders.FRAME_RATE / mimi.frame_rate
@@ -87,21 +88,48 @@ OUT_DIR = os.path.join(os.path.dirname(__file__), "..", "data", "demo_rag_datase
 AUDIO_DIR = os.path.join(OUT_DIR, "audio")
 
 
-def write_placeholder_wav(path: str, duration_sec: float, tone_hz: float) -> None:
-    """Mono 16-bit PCM @ SAMPLE_RATE, a very quiet tone (NOT real speech).
-    Exists only so the pipeline has a real audio file of the right length
-    and sample rate to run mimi.encode() on end-to-end."""
+def write_placeholder_wav_stereo(path: str, duration_sec: float, tone_hz: float,
+                                  speaker_windows: list[tuple[float, float, str]]) -> None:
+    """STEREO 16-bit PCM @ SAMPLE_RATE -- channel 0 = agent/MODEL audio,
+    channel 1 = USER audio (a very quiet tone during each window in
+    `speaker_windows` where that role is "speaking", silence elsewhere).
+    NOT real speech -- exists only so the pipeline has a real audio file of
+    the right shape/length/sample rate to run mimi.encode() on end-to-end.
+
+    Stereo is required, not cosmetic: interleaver.py calls
+    `mimi.encode(audio_tensor[:, None])` on this file's [2, T] samples,
+    which treats the 2 channels as 2 batch items each independently encoded
+    to 8 codebooks, then flattens to [1, 16, T] via `.view(1, -1, T)| --
+    channel 0 -> codebooks 0-7 (agent), channel 1 -> codebooks 8-15 (user),
+    matching the SILENCE_TOKENS(agent)/SINE_TOKENS(user) convention already
+    hardcoded in `_build_forced_text_frames`. A mono file only produces 8
+    codebooks total and raises:
+        RuntimeError: Sizes of tensors must match except in dimension 2.
+        Expected size 8 but got size 16 for tensor number 1 in the list.
+    """
     n_samples = int(round(duration_sec * SAMPLE_RATE))
-    amplitude = 800  # quiet, out of 32767 max
+    agent = np.zeros(n_samples, dtype=np.float32)
+    user = np.zeros(n_samples, dtype=np.float32)
+    amplitude = 800 / 32767.0  # quiet
+
+    t = np.arange(n_samples) / SAMPLE_RATE
+    tone = amplitude * np.sin(2 * math.pi * tone_hz * t)
+
+    for start_sec, end_sec, role in speaker_windows:
+        s = max(0, int(round(start_sec * SAMPLE_RATE)))
+        e = min(n_samples, int(round(end_sec * SAMPLE_RATE)))
+        if s >= e:
+            continue
+        target = agent if role == "MODEL" else user
+        target[s:e] = tone[s:e]
+
+    stereo = np.stack([agent, user], axis=-1)  # [T, 2] for interleaved PCM
+    pcm16 = (np.clip(stereo, -1.0, 1.0) * 32767.0).astype("<i2")
     with wave.open(path, "wb") as w:
-        w.setnchannels(1)
+        w.setnchannels(2)
         w.setsampwidth(2)
         w.setframerate(SAMPLE_RATE)
-        frames = bytearray()
-        for i in range(n_samples):
-            val = int(amplitude * math.sin(2 * math.pi * tone_hz * (i / SAMPLE_RATE)))
-            frames += struct.pack("<h", val)
-        w.writeframes(bytes(frames))
+        w.writeframes(pcm16.tobytes())
 
 
 def words_alignment(text: str, start_sec: float, end_sec: float, speaker: str) -> list:
@@ -269,7 +297,7 @@ REGULAR_EXAMPLES = [
 ]
 
 
-def build_rag_example(spec: dict) -> tuple[dict, float]:
+def build_rag_example(spec: dict) -> tuple[dict, float, list]:
     # timeline (seconds): USER question -> silence/wait -> <lookup> marker ->
     # <ref> (injected, no real audio) -> MODEL body (first model speech in
     # the sample) -> trailing regular follow-up. No lead/filler audio at all
@@ -304,25 +332,32 @@ def build_rag_example(spec: dict) -> tuple[dict, float]:
     if spec.get("system_prompt"):
         sidecar["metadata"] = {"system_prompt": spec["system_prompt"]}
 
-    return sidecar, duration_sec
+    speaker_windows = [
+        (user_start, user_end, "USER"),
+        (body_start, body_end, "MODEL"),
+        (tail_start, tail_end, "MODEL"),
+    ]
+    return sidecar, duration_sec, speaker_windows
 
 
-def build_regular_example(spec: dict, include_segment_meta: bool) -> tuple[dict, float]:
+def build_regular_example(spec: dict, include_segment_meta: bool) -> tuple[dict, float, list]:
     seg_len = 2.0
     duration_sec = seg_len * len(spec["turns_text"])
     alignments = []
     turns = []
+    speaker_windows = []
     t = 0.0
     for speaker, text in spec["turns_text"]:
         alignments += words_alignment(text, t, t + seg_len, speaker)
         turns.append(turn("regular", t, t + seg_len))
+        speaker_windows.append((t, t + seg_len, speaker))
         t += seg_len
     alignments.sort(key=lambda a: a[1][0])
 
     sidecar = {"alignments": alignments}
     if include_segment_meta:
         sidecar["segment_meta"] = {"turns": turns}
-    return sidecar, duration_sec
+    return sidecar, duration_sec, speaker_windows
 
 
 def main():
@@ -330,10 +365,10 @@ def main():
     manifest_lines = []
 
     for spec in RAG_EXAMPLES:
-        sidecar, duration_sec = build_rag_example(spec)
+        sidecar, duration_sec, speaker_windows = build_rag_example(spec)
         wav_path = os.path.join(AUDIO_DIR, spec["name"] + ".wav")
         json_path = os.path.join(AUDIO_DIR, spec["name"] + ".new.combined.json")
-        write_placeholder_wav(wav_path, duration_sec, spec["tone_hz"])
+        write_placeholder_wav_stereo(wav_path, duration_sec, spec["tone_hz"], speaker_windows)
         with open(json_path, "w", encoding="utf-8") as f:
             json.dump(sidecar, f, ensure_ascii=False, indent=2)
         manifest_lines.append({"path": os.path.abspath(wav_path).replace("\\", "/"),
@@ -341,10 +376,10 @@ def main():
 
     for idx, spec in enumerate(REGULAR_EXAMPLES):
         include_meta = idx == 0  # ex09 keeps segment_meta(regular-only), ex10 omits it
-        sidecar, duration_sec = build_regular_example(spec, include_segment_meta=include_meta)
+        sidecar, duration_sec, speaker_windows = build_regular_example(spec, include_segment_meta=include_meta)
         wav_path = os.path.join(AUDIO_DIR, spec["name"] + ".wav")
         json_path = os.path.join(AUDIO_DIR, spec["name"] + ".new.combined.json")
-        write_placeholder_wav(wav_path, duration_sec, spec["tone_hz"])
+        write_placeholder_wav_stereo(wav_path, duration_sec, spec["tone_hz"], speaker_windows)
         with open(json_path, "w", encoding="utf-8") as f:
             json.dump(sidecar, f, ensure_ascii=False, indent=2)
         manifest_lines.append({"path": os.path.abspath(wav_path).replace("\\", "/"),
