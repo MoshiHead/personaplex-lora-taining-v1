@@ -159,7 +159,24 @@ def apply_lora(
     from peft import LoraConfig, get_peft_model, TaskType
 
     if target_modules is None:
-        target_modules = ["in_proj", "out_proj", "fc1", "fc2", "linear", "proj"]
+        # These MUST be the real nn.Linear submodule names in this repo's
+        # transformer/gating code (moshi_local/moshi/modules/transformer.py,
+        # gating.py), because PEFT's target-module matching is a plain
+        # `module_key.endswith(target_string)` check over real nn.Module
+        # names -- it silently matches nothing for a name that doesn't
+        # exist, with no error or warning.
+        #   - "out_proj"          : attention output projection (real)
+        #   - "linear1"/"linear2" : standard MLP (real)
+        #   - "linear_in"/"linear_out": gated MLP variant (real)
+        #   - "input_proj"        : standalone conditioning-path linear (real)
+        # The old default here was ["in_proj","out_proj","fc1","fc2","linear","proj"] --
+        # "in_proj","fc1","fc2","linear" match NOTHING in this codebase ("in_proj"
+        # isn't even an nn.Module, it's a raw in_proj_weight/in_proj_bias
+        # Parameter pair -- see StreamingMultiheadAttention.__init__), so
+        # previously only out_proj (and anything else ending in "proj") ever
+        # received LoRA weights: the QKV projection and the entire MLP were
+        # frozen for the whole run despite being listed as targets.
+        target_modules = ["out_proj", "linear1", "linear2", "linear_in", "linear_out", "input_proj"]
 
     config = LoraConfig(
         r=rank,
@@ -568,10 +585,21 @@ def main() -> None:
 
     ap.add_argument("--first-codebook-weight", dest="first_codebook_weight_multiplier", type=float, default=100.0)
     ap.add_argument("--text-padding-weight", type=float, default=0.5)
-    ap.add_argument("--ref-token-weight", type=float, default=5.0)
-    ap.add_argument("--ref-context-weight", type=float, default=1.0)
+    # ref-context-weight / lookup-weight: loss weight on the *injected*
+    # <lookup>/<ref> control-tag frames themselves (see interleaver.py's
+    # _inject_rag_blocks -- these frames are FORCED text, spliced into the
+    # codebook at data-prep time, never something the model generates at
+    # inference; liveTry.py's runtime feeds them in verbatim the same way).
+    # Both default to 0.0 (excluded from the text loss) on purpose: a
+    # positive weight here trains the model, via teacher forcing, to predict
+    # those exact tag tokens as ITS OWN next-token output -- i.e. it
+    # literally teaches the model to speak "<ref>"/"<lookup>" text, which is
+    # the opposite of the intended behavior (consume them silently as
+    # context). Only "body" (the model's actual grounded reply) should carry
+    # positive loss weight for RAG turns. Previously this was 1.0/5.0.
+    ap.add_argument("--ref-context-weight", type=float, default=0.0)
     ap.add_argument("--lead-weight", type=float, default=1.0)
-    ap.add_argument("--lookup-weight", type=float, default=5.0)   # NEW — rare, high-signal token, same treatment as ref
+    ap.add_argument("--lookup-weight", type=float, default=0.0)
     ap.add_argument("--filler-weight", type=float, default=1.0)   # WAS 0.5 — parity with lead, per earlier finding
     ap.add_argument("--body-weight", type=float, default=2.0)
     ap.add_argument("--no-rag-weight", type=float, default=1.0)

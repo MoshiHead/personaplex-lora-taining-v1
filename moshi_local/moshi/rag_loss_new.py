@@ -46,17 +46,25 @@ class SegmentMeta:
 def make_segment_weight_tensor(
     B: int, T: int, seg_metas: list[SegmentMeta],
     device: torch.device,
-    ref_weight: float = 5.0,
-    lookup_weight: float = 5.0,
+    lookup_weight: float = 0.0,
     lead_weight: float = 1.0,
     filler_weight: float = 1.0,
-    ref_context_weight: float = 1.0,
+    ref_context_weight: float = 0.0,
     body_weight: float = 2.0,
     no_rag_weight: float = 1.0,
 ) -> torch.Tensor:
     """
     Build a [B, T] float tensor of per-frame text loss weights.
 
+    ref_context_weight / lookup_weight default to 0.0: the "ref" and
+    "lookup" spans are FORCED text spliced into the codebook by
+    interleaver.py's _inject_rag_blocks (and force-fed the same way at
+    inference by liveTry.py) -- the model never has to generate them itself.
+    Giving them a positive text-loss weight teaches the model, via teacher
+    forcing, to predict those literal tag tokens as its own next-token
+    output, which is exactly the "model speaks the <ref>/<lookup> tag
+    aloud" failure mode. Only "body" (the model's real grounded reply)
+    should be upweighted.
     """
     weights = torch.full((B, T), no_rag_weight, dtype=torch.float32, device=device)
 
@@ -175,11 +183,10 @@ def compute_rag_losses(
 
     seg_weights = make_segment_weight_tensor(
         B=B, T=T, seg_metas=seg_metas, device=device,
-        ref_weight=getattr(args, "ref_token_weight", 5.0),
-        lookup_weight=getattr(args, "lookup_weight", 5.0),
+        lookup_weight=getattr(args, "lookup_weight", 0.0),
         lead_weight=getattr(args, "lead_weight", 1.0),
         filler_weight=getattr(args, "filler_weight", 1.0),
-        ref_context_weight=getattr(args, "ref_context_weight", 1.0),
+        ref_context_weight=getattr(args, "ref_context_weight", 0.0),
         body_weight=getattr(args, "body_weight", 2.0),
         no_rag_weight=getattr(args, "no_rag_weight", 1.0),
     )
